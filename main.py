@@ -31,6 +31,7 @@ def format_message(hackathon: dict, ideas: str) -> str:
         f"🏆 *New Hackathon Alert!*\n\n"
         f"*{hackathon.get('title', 'Unknown')}*\n"
         f"📍 Source: {hackathon.get('source', 'N/A')}\n"
+        f"👥 Participants: {hackathon.get('participants', 'N/A')}\n"
         f"🎯 Theme: {hackathon.get('theme', 'N/A')}\n"
         f"💰 Prize: {hackathon.get('prize', 'N/A')}\n"
         f"⏰ Deadline: {hackathon.get('deadline', 'N/A')}\n"
