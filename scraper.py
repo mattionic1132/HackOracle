@@ -16,77 +16,79 @@ def _safe_text(element, default="N/A") -> str:
     return element.get_text(strip=True) if element else default
 
 
-def _fetch_soup(url: str) -> BeautifulSoup:
-    resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-    resp.raise_for_status()
-    return BeautifulSoup(resp.text, "lxml")
-
-
-def _scrape_devpost_status(status: str) -> list[dict]:
+def _scrape_devpost() -> list[dict]:
+    """Uses Devpost's JSON API — no HTML parsing, not blocked."""
     try:
-        soup = _fetch_soup(f"https://devpost.com/hackathons?search=singapore&status={status}")
+        resp = requests.get(
+            "https://devpost.com/api/hackathons",
+            params={"search": "singapore", "status[]": ["open", "upcoming"], "per_page": 50},
+            headers=HEADERS,
+            timeout=TIMEOUT,
+        )
+        resp.raise_for_status()
         hackathons = []
-        for tile in soup.select("a.hackathon-tile"):
-            href = tile.get("href", "")
-            hack_url = href if href.startswith("http") else f"https://devpost.com{href}"
-            themes = [t.get_text(strip=True) for t in tile.select(".hackathon-tag")]
+        for h in resp.json().get("hackathons", []):
+            themes = [t.get("name", "") for t in h.get("themes", [])]
             hackathons.append({
-                "title": _safe_text(tile.select_one(".hackathon-tile-title h5"), "Unknown"),
-                "url": hack_url,
+                "title": h.get("title", "Unknown"),
+                "url": h.get("url", ""),
                 "source": "Devpost",
                 "theme": ", ".join(themes) if themes else "General",
-                "prize": _safe_text(tile.select_one(".prize-amount")),
-                "deadline": _safe_text(tile.select_one(".submission-period")),
+                "prize": h.get("prize_amount") or "N/A",
+                "deadline": h.get("submission_period_dates") or "N/A",
             })
         return hackathons
     except Exception as exc:
-        print(f"[scraper] Devpost ({status}) failed: {exc}")
+        print(f"[scraper] Devpost failed: {exc}")
         return []
 
 
-def _scrape_eventbrite() -> list[dict]:
+def _scrape_luma() -> list[dict]:
+    """Scrapes lu.ma Singapore tech events for hackathons."""
     try:
-        soup = _fetch_soup("https://www.eventbrite.sg/d/singapore--singapore/hackathon/")
+        resp = requests.get(
+            "https://lu.ma/singapore",
+            headers=HEADERS,
+            timeout=TIMEOUT,
+        )
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "lxml")
         hackathons = []
-        for card in soup.select("[data-testid='event-card']"):
-            title_el = card.select_one("h2, h3, [class*='event-title'], [class*='eds-is-hidden-accessible']")
-            link_el = card.select_one("a[href]")
-            title = _safe_text(title_el, "")
-            hack_url = link_el["href"] if link_el else ""
-            if not title or not hack_url:
+        for card in soup.select("a[href*='/']"):
+            title_el = card.select_one("h3, h2, [class*='title'], [class*='name']")
+            title = _safe_text(title_el, "").strip()
+            href = card.get("href", "")
+            if not title or not href or "hackathon" not in title.lower():
                 continue
+            hack_url = href if href.startswith("http") else f"https://lu.ma{href}"
+            date_el = card.select_one("time, [class*='date'], [class*='time']")
             hackathons.append({
                 "title": title,
                 "url": hack_url,
-                "source": "Eventbrite",
+                "source": "Luma",
                 "theme": "General",
                 "prize": "N/A",
-                "deadline": _safe_text(card.select_one("p[class*='date'], time, [class*='date-info']")),
+                "deadline": _safe_text(date_el),
             })
         return hackathons
     except Exception as exc:
-        print(f"[scraper] Eventbrite failed: {exc}")
+        print(f"[scraper] Luma failed: {exc}")
         return []
 
 
 def get_all_hackathons() -> list[dict]:
-    tasks = [
-        ("devpost_open", lambda: _scrape_devpost_status("open")),
-        ("devpost_upcoming", lambda: _scrape_devpost_status("upcoming")),
-        ("eventbrite", _scrape_eventbrite),
-    ]
+    tasks = {
+        "devpost": _scrape_devpost,
+        "luma": _scrape_luma,
+    }
 
     results: dict[str, list[dict]] = {}
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        futures = {pool.submit(fn): name for name, fn in tasks}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {pool.submit(fn): name for name, fn in tasks.items()}
         for future in as_completed(futures):
             results[futures[future]] = future.result()
 
-    all_hackathons = (
-        results.get("devpost_open", [])
-        + results.get("devpost_upcoming", [])
-        + results.get("eventbrite", [])
-    )
-    devpost_count = len(results.get("devpost_open", [])) + len(results.get("devpost_upcoming", []))
-    print(f"[scraper] Found {devpost_count} Devpost + {len(results.get('eventbrite', []))} Eventbrite hackathons")
-    return all_hackathons
+    devpost = results.get("devpost", [])
+    luma = results.get("luma", [])
+    print(f"[scraper] Found {len(devpost)} Devpost + {len(luma)} Luma hackathons")
+    return devpost + luma
